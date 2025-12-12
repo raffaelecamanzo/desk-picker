@@ -6,6 +6,12 @@ pipeline {
     REGISTRY = credentials('docker-registry')
   }
 
+  tools {
+        // The string here MUST match the Name you set in Jenkins > Tools
+        maven 'Maven 3.9.11' 
+        jdk 'OpenJDK 21' 
+  }
+
   stages {
     stage('Checkout') {
       steps {
