@@ -11,6 +11,7 @@ pipeline {
         maven 'Maven 3.9.11' 
         jdk 'OpenJDK 21' 
         nodejs 'Node 25.2.1'
+        docker 'Docker'
   }
 
   stages {
