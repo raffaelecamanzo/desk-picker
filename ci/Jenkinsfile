@@ -10,6 +10,7 @@ pipeline {
         // The string here MUST match the Name you set in Jenkins > Tools
         maven 'Maven 3.9.11' 
         jdk 'OpenJDK 21' 
+        npm 'Node 25.2.1'
   }
 
   stages {
