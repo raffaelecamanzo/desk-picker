@@ -20,6 +20,25 @@ pipeline {
       }
     }
 
+    stage('Debug SCM vars') {
+      steps {
+        sh '''
+          echo "GIT_COMMIT=$GIT_COMMIT"
+          echo "GIT_BRANCH=$GIT_BRANCH"
+        '''
+      }
+    }
+
+    stage('Check Docker') {
+      steps {
+        sh '''
+          echo "PATH=$PATH"
+          which docker
+          docker version
+        '''
+      }
+    }
+    
     stage('Backend - Build & Test') {
       steps {
         dir('backend') {
