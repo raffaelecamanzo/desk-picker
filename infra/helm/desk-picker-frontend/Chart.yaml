@@ -1,0 +1,6 @@
+apiVersion: v2
+name: desk-picker-frontend
+description: React SPA served by nginx for Desk Picker
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

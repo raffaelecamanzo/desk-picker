@@ -1,0 +1,39 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: desk-picker-backend-test
+  namespace: argocd
+spec:
+  project: desk-picker
+  source:
+    repoURL: https://github.com/example/desk-picker
+    targetRevision: main
+    path: infra/helm/desk-picker-backend
+    helm:
+      valueFiles:
+        - ../../values/values-test.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: desk-picker-test
+  syncPolicy:
+    automated: {}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: desk-picker-frontend-test
+  namespace: argocd
+spec:
+  project: desk-picker
+  source:
+    repoURL: https://github.com/example/desk-picker
+    targetRevision: main
+    path: infra/helm/desk-picker-frontend
+    helm:
+      valueFiles:
+        - ../../values/values-test.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: desk-picker-test
+  syncPolicy:
+    automated: {}

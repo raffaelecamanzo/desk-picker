@@ -1,0 +1,123 @@
+{
+  "$schema": "http://json-schema.org/draft-04/schema#",
+  "type": "object",
+  "properties": {
+    "office-name": {
+      "type": "string"
+    },
+    "office-location": {
+      "type": "string"
+    },
+    "floors": {
+      "type": "object",
+      "properties": {
+        "floor": {
+          "type": "array",
+          "items": [
+            {
+              "type": "object",
+              "properties": {
+                "floor-num": {
+                  "type": "integer"
+                },
+                "floor-name": {
+                  "type": "string"
+                },
+                "floor-map": {
+                  "type": "string"
+                },
+                "desks": {
+                  "type": "object",
+                  "properties": {
+                    "desk": {
+                      "type": "array",
+                      "items": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "desk-num": {
+                              "type": "integer"
+                            },
+                            "available-seats": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "desk-num",
+                            "available-seats"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "desk-num": {
+                              "type": "integer"
+                            },
+                            "available-seats": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "desk-num",
+                            "available-seats"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "desk-num": {
+                              "type": "integer"
+                            },
+                            "available-seats": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "desk-num",
+                            "available-seats"
+                          ]
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "desk-num": {
+                              "type": "integer"
+                            },
+                            "available-seats": {
+                              "type": "integer"
+                            }
+                          },
+                          "required": [
+                            "desk-num",
+                            "available-seats"
+                          ]
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "desk"
+                  ]
+                }
+              },
+              "required": [
+                "floor-num",
+                "floor-name",
+                "floor-map",
+                "desks"
+              ]
+            }
+          ]
+        }
+      },
+      "required": [
+        "floor"
+      ]
+    }
+  },
+  "required": [
+    "office-name",
+    "office-location",
+    "floors"
+  ]
+}

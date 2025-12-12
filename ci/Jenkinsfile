@@ -1,0 +1,50 @@
+pipeline {
+  agent any
+
+  environment {
+    MAVEN_OPTS = "-Dmaven.repo.local=.m2/repository"
+    REGISTRY = credentials('docker-registry')
+  }
+
+  stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
+
+    stage('Backend - Build & Test') {
+      steps {
+        dir('backend') {
+          sh 'mvn -B -DskipTests=false clean verify'
+        }
+      }
+    }
+
+    stage('Frontend - Build') {
+      steps {
+        dir('frontend') {
+          sh '''
+            npm install
+            npm run build
+          '''
+        }
+      }
+    }
+
+    stage('Docker Build') {
+      parallel {
+        stage('Backend image') {
+          steps {
+            sh 'docker build -t $REGISTRY/desk-picker-backend:latest backend'
+          }
+        }
+        stage('Frontend image') {
+          steps {
+            sh 'docker build -t $REGISTRY/desk-picker-frontend:latest frontend'
+          }
+        }
+      }
+    }
+  }
+}

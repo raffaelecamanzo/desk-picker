@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "desk-picker-frontend.fullname" . }}
+  labels:
+    app: {{ include "desk-picker-frontend.name" . }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    app: {{ include "desk-picker-frontend.name" . }}
+  ports:
+    - port: {{ .Values.service.port }}
+      targetPort: http
+      protocol: TCP
+      name: http

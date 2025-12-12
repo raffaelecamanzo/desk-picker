@@ -1,0 +1,62 @@
+{
+  "office-name": "Ufficio Roma",
+  "office-location": "Rome",
+  "floors": {
+    "floor": [
+      {
+        "floor-num": 1,
+        "floor-name": "Piano terra",
+        "floor-map": "images/floor_one_rome.jpg",
+        "desks": {
+          "desk": [
+            {
+              "desk-num": 1,
+              "available-seats": 4
+            },
+            {
+              "desk-num": 2,
+              "available-seats": 4
+            },
+            {
+              "desk-num": 3,
+              "available-seats": 4
+            },
+            {
+              "desk-num": 4,
+              "available-seats": 4
+            }
+          ]
+        }
+      },
+      {
+        "floor-num": 2,
+        "floor-name": "Primo piano",
+        "floor-map": "images/floor_one_rome.jpg",
+        "desks": {
+          "desk": [
+            {
+              "desk-num": 1,
+              "available-seats": 4
+            },
+            {
+              "desk-num": 2,
+              "available-seats": 4
+            },
+            {
+              "desk-num": 3,
+              "available-seats": 4
+            },
+            {
+              "desk-num": 4,
+              "available-seats": 3
+            },
+            {
+              "desk-num": 5,
+              "available-seats": 3
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

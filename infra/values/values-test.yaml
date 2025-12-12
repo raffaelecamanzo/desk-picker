@@ -1,0 +1,24 @@
+global:
+  host: desk-picker.test.example.com
+
+backend:
+  image:
+    repository: desk-picker-backend
+    tag: latest
+  ingress:
+    hosts:
+      - host: desk-picker.test.example.com
+        paths:
+          - path: /api
+            pathType: Prefix
+
+frontend:
+  image:
+    repository: desk-picker-frontend
+    tag: latest
+  ingress:
+    hosts:
+      - host: desk-picker.test.example.com
+        paths:
+          - path: /
+            pathType: Prefix
