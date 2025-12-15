@@ -3,32 +3,28 @@ pipeline {
 
   options {
     timestamps()
-    ansiColor('xterm')
   }
 
   parameters {
-    choice(
-      name: 'DEPLOY_ENV',
-      choices: ['dev', 'test', 'prod'],
-      description: 'Which environment values file to update'
-    )
+    choice(name: 'DEPLOY_ENV', choices: ['dev', 'test', 'prod'], description: 'Which environment to update')
   }
 
   environment {
-    CI_MODE = "${env.CI_MODE ?: 'docker'}"   // docker | k8s
+    // Set per Jenkins instance: dev -> docker ; test/prod -> k8s
+    CI_MODE = "${env.CI_MODE ?: 'docker'}"
 
-    DOCKERHUB_REPO = "local-build-images"
-    GIT_SHA = "${env.GIT_COMMIT ?: 'dev'}"
+    // Non-secret Docker Hub username should be configured globally (same everywhere)
+    // Example: DOCKERHUB_USER_NAME=raffaelecamanzo
+    DOCKERHUB_USER_NAME = "${env.DOCKERHUB_USER_NAME ?: ''}"
+    DOCKERHUB_REPO = "${env.DOCKERHUB_REPO ?: ''}"
 
+    // where your values files are
     VALUES_FILE = "infra/values/values-${params.DEPLOY_ENV}.yaml"
 
-    CI_TOOLS_IMAGE = "ci-tools-${GIT_SHA}"
     BACKEND_IMAGE  = "desk-picker-backend"
     FRONTEND_IMAGE = "desk-picker-frontend"
 
-    BACKEND_TAG = "${environment.BACKEND_IMAGE}-${env.GIT_COMMIT}"
-    FRONTEND_TAG = "${environment.FRONTEND_IMAGE}-${env.GIT_COMMIT}"
-
+    // Branch strategy you described
     BASE_BRANCH = "${params.DEPLOY_ENV == 'dev' ? 'main' : params.DEPLOY_ENV}"
   }
 
@@ -39,13 +35,23 @@ pipeline {
       steps { checkout scm }
     }
 
+    stage('Resolve Git SHA') {
+      agent any
+      steps {
+        script {
+          env.GIT_SHA = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+          env.BACKEND_TAG  = "${env.BACKEND_IMAGE}-${env.GIT_SHA}"
+          env.FRONTEND_TAG = "${env.FRONTEND_IMAGE}-${env.GIT_SHA}"
+        }
+      }
+    }
+
     /* =========================================================
        DEV MODE — Docker Desktop available
        ========================================================= */
-    stage('CI (docker mode)') {
+    stage('CI - Docker mode') {
       when { expression { env.CI_MODE == 'docker' } }
       agent any
-
       steps {
         withCredentials([usernamePassword(
           credentialsId: 'docker-registry',
@@ -57,40 +63,20 @@ pipeline {
 
             echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
 
-            docker buildx create --use --name ci-builder || docker buildx use ci-builder
+            docker buildx create --use --name ci-builder >/dev/null 2>&1 || docker buildx use ci-builder
             docker buildx inspect --bootstrap
-
-            # Build & push CI toolchain
-            docker buildx build \
-              -f ci/Dockerfile . \
-              -t "$DOCKER_USER/$DOCKERHUB_REPO:$CI_TOOLS_IMAGE" \
-              --push
-
-            # Backend build/test
-            docker run --rm \
-              -v "$PWD:/workspace" \
-              -w /workspace/backend \
-              "$DOCKER_USER/$DOCKERHUB_REPO:$CI_TOOLS_IMAGE" \
-              mvn -B -Dmaven.repo.local=/workspace/.m2/repository clean verify
-
-            # Frontend build
-            docker run --rm \
-              -v "$PWD:/workspace" \
-              -w /workspace/frontend \
-              "$DOCKER_USER/$DOCKERHUB_REPO:$CI_TOOLS_IMAGE" \
-              bash -lc "npm ci && npm run build"
 
             # Build & push backend image
             docker buildx build backend \
               -f backend/Dockerfile \
-              -t "$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_IMAGE-$GIT_SHA" \
+              -t "$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_TAG" \
               -t "$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_IMAGE-latest" \
               --push
 
             # Build & push frontend image
             docker buildx build frontend \
               -f frontend/Dockerfile \
-              -t "$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-$GIT_SHA" \
+              -t "$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_TAG" \
               -t "$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-latest" \
               --push
 
@@ -101,9 +87,10 @@ pipeline {
     }
 
     /* =========================================================
-       TEST / PROD — Kubernetes agents, no Docker
+       TEST / PROD — Kubernetes pods, no Docker
+       Requires Kubernetes plugin.
        ========================================================= */
-    stage('CI (kubernetes mode)') {
+    stage('CI - Kubernetes mode') {
       when { expression { env.CI_MODE == 'k8s' } }
 
       agent {
@@ -114,17 +101,14 @@ kind: Pod
 spec:
   containers:
   - name: tools
-    image: maven:3.9.11-eclipse-temurin-21
+    image: ${env.DOCKERHUB_USER_NAME}/${env.DOCKERHUB_REPO}:ci-tools
     tty: true
     command: ["sh","-lc","cat"]
 
   - name: buildkit
-    image: moby/buildkit:rootless
+    image: moby/buildkit:latest
     tty: true
-    command: ["sh","-lc","buildkitd --addr unix:///run/user/1000/buildkit/buildkitd.sock"]
-    securityContext:
-      runAsUser: 1000
-      runAsGroup: 1000
+    command: ["sh","-lc","buildkitd --addr unix:///run/buildkit/buildkitd.sock & sleep infinity"]
 """
         }
       }
@@ -136,10 +120,10 @@ spec:
           passwordVariable: 'DOCKER_PASS'
         )]) {
 
-          /* ---------- Build & Test ---------- */
+          // Build & test in the tools container (this must include node+mvn+yq+gh)
           container('tools') {
             sh '''
-              set -e
+              set -euo pipefail
               cd backend
               mvn -B clean verify
               cd ../frontend
@@ -148,39 +132,36 @@ spec:
             '''
           }
 
-          /* ---------- Image Build (BuildKit) ---------- */
+          // Build & push images with BuildKit
           container('buildkit') {
             sh '''
               set -euo pipefail
 
-              # Prepare Docker auth for BuildKit
               mkdir -p /tmp/docker
               AUTH="$(printf "%s:%s" "$DOCKER_USER" "$DOCKER_PASS" | base64 | tr -d '\\n')"
               cat > /tmp/docker/config.json <<EOF
               { "auths": { "https://index.docker.io/v1/": { "auth": "$AUTH" } } }
 EOF
 
-              export BUILDKIT_HOST=unix:///run/user/1000/buildkit/buildkitd.sock
+              export BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock
 
-              # Backend image
+              # Backend
               buildctl build \
                 --frontend dockerfile.v0 \
                 --local context=backend \
                 --local dockerfile=backend \
                 --opt filename=Dockerfile \
-                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_IMAGE-$GIT_SHA",push=true \
-                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_IMAGE-latest",push=true \
-                --opt build-arg:DOCKER_CONFIG=/tmp/docker
+                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_TAG",push=true \
+                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_IMAGE-latest",push=true
 
-              # Frontend image
+              # Frontend
               buildctl build \
                 --frontend dockerfile.v0 \
                 --local context=frontend \
                 --local dockerfile=frontend \
                 --opt filename=Dockerfile \
-                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-$GIT_SHA",push=true \
-                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-latest",push=true \
-                --opt build-arg:DOCKER_CONFIG=/tmp/docker
+                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_TAG",push=true \
+                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-latest",push=true
             '''
           }
         }
@@ -188,19 +169,14 @@ EOF
     }
 
     stage('Update Helm values') {
+      agent any
       steps {
         sh '''
           set -euo pipefail
 
-          # Ensure yq exists (install method depends on your agent image)
-          command -v yq >/dev/null 2>&1 || {
-            echo "yq not found. Install yq in your CI tools image or agent."
-            exit 1
-          }
-
           yq -i \
             ".backend.image.tag = \\"$BACKEND_TAG\\" |
-            .frontend.image.tag = \\"$FRONTEND_TAG\\"" \
+             .frontend.image.tag = \\"$FRONTEND_TAG\\"" \
             "$VALUES_FILE"
 
           git diff -- "$VALUES_FILE" || true
@@ -208,12 +184,14 @@ EOF
       }
     }
 
-    stage('GitOps apply (dev push)') {
+    stage('GitOps - Push dev to main') {
       when { expression { params.DEPLOY_ENV == 'dev' } }
+      agent any
       steps {
         withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
           sh '''
             set -euo pipefail
+
             git checkout main
             git pull --ff-only
 
@@ -221,49 +199,48 @@ EOF
             git config user.name  "ci-bot"
 
             git add "$VALUES_FILE"
-            git commit -m "deploy(dev): ${GIT_COMMIT} [skip ci]" || exit 0
+            git commit -m "deploy(dev): ${GIT_SHA} [skip ci]" || exit 0
 
-            # Use token auth for push
             git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/raffaelecamanzo/desk-picker.git"
-            git push origin HEAD
+            git push origin main
           '''
         }
       }
-    }  
+    }
 
-    stage('GitOps apply (dev push)') {
-      when { expression { params.DEPLOY_ENV == 'dev' } }
+    stage('GitOps - PR to test/prod') {
+      when { expression { params.DEPLOY_ENV != 'dev' } }
+      agent any
       steps {
         withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
           sh '''
             set -euo pipefail
             export GH_TOKEN="$GITHUB_TOKEN"
 
+            # checkout the target env branch
             git fetch origin "$BASE_BRANCH"
             git checkout -B "$BASE_BRANCH" "origin/$BASE_BRANCH"
 
-            BRANCH="promote/${DEPLOY_ENV}/${GIT_COMMIT}"
+            BRANCH="promote/${DEPLOY_ENV}/${GIT_SHA}"
             git checkout -b "$BRANCH"
 
-            git config user.email "ci@your-company.local"
+            git config user.email "ci@sourcesense.local"
             git config user.name  "ci-bot"
 
             git add "$VALUES_FILE"
-            git commit -m "promote(${DEPLOY_ENV}): ${GIT_COMMIT}" || exit 0
+            git commit -m "promote(${DEPLOY_ENV}): ${GIT_SHA}" || exit 0
 
-            # Use token auth for push
             git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/raffaelecamanzo/desk-picker.git"
-            git push origin HEAD
+            git push -u origin "$BRANCH"
 
             gh pr create \
               --base "$BASE_BRANCH" \
               --head "$BRANCH" \
-              --title "Promote to ${DEPLOY_ENV}: ${GIT_COMMIT}" \
+              --title "Promote to ${DEPLOY_ENV}: ${GIT_SHA}" \
               --body "Update ${VALUES_FILE} to backend=${BACKEND_TAG}, frontend=${FRONTEND_TAG}"
           '''
         }
       }
     }
-
   }
 }
