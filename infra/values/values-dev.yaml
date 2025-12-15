@@ -1,24 +1,24 @@
 global:
-  host: desk-picker.dev.example.com
+  host: desk-picker.dev.sourcesense.com
 
 backend:
   image:
-    repository: desk-picker-backend
-    tag: latest
+    repository: raffaelecamanzo/local-build-images
+    tag: desk-picker-backend-${GIT_COMMIT}
   ingress:
     hosts:
-      - host: desk-picker.dev.example.com
+      - host: desk-picker.dev.sourcesense.com
         paths:
           - path: /api
             pathType: Prefix
 
 frontend:
   image:
-    repository: desk-picker-frontend
-    tag: latest
+    repository: raffaelecamanzo/local-build-images
+    tag: desk-picker-frontend-${GIT_COMMIT}
   ingress:
     hosts:
-      - host: desk-picker.dev.example.com
+      - host: desk-picker.dev.sourcesense.com
         paths:
           - path: /
             pathType: Prefix

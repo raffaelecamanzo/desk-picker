@@ -1,76 +1,269 @@
 pipeline {
-  agent any
+  agent none
 
-  environment {
-    MAVEN_OPTS = "-Dmaven.repo.local=.m2/repository"
-    REGISTRY = credentials('docker-registry')
+  options {
+    timestamps()
+    ansiColor('xterm')
   }
 
-  tools {
-        // The string here MUST match the Name you set in Jenkins > Tools
-        maven 'Maven 3.9.11' 
-        jdk 'OpenJDK 21' 
-        nodejs 'Node 25.2.1'
+  parameters {
+    choice(
+      name: 'DEPLOY_ENV',
+      choices: ['dev', 'test', 'prod'],
+      description: 'Which environment values file to update'
+    )
+  }
+
+  environment {
+    CI_MODE = "${env.CI_MODE ?: 'docker'}"   // docker | k8s
+
+    DOCKERHUB_REPO = "local-build-images"
+    GIT_SHA = "${env.GIT_COMMIT ?: 'dev'}"
+
+    VALUES_FILE = "infra/values/values-${params.DEPLOY_ENV}.yaml"
+
+    CI_TOOLS_IMAGE = "ci-tools-${GIT_SHA}"
+    BACKEND_IMAGE  = "desk-picker-backend"
+    FRONTEND_IMAGE = "desk-picker-frontend"
+
+    BACKEND_TAG = "${environment.BACKEND_IMAGE}-${env.GIT_COMMIT}"
+    FRONTEND_TAG = "${environment.FRONTEND_IMAGE}-${env.GIT_COMMIT}"
+
+    BASE_BRANCH = "${params.DEPLOY_ENV == 'dev' ? 'main' : params.DEPLOY_ENV}"
   }
 
   stages {
+
     stage('Checkout') {
-      steps {
-        checkout scm
-      }
+      agent any
+      steps { checkout scm }
     }
 
-    stage('Debug SCM vars') {
-      steps {
-        sh '''
-          echo "GIT_COMMIT=$GIT_COMMIT"
-          echo "GIT_BRANCH=$GIT_BRANCH"
-        '''
-      }
-    }
+    /* =========================================================
+       DEV MODE — Docker Desktop available
+       ========================================================= */
+    stage('CI (docker mode)') {
+      when { expression { env.CI_MODE == 'docker' } }
+      agent any
 
-    stage('Check Docker') {
       steps {
-        sh '''
-          echo "PATH=$PATH"
-          which docker
-          docker version
-        '''
-      }
-    }
-    
-    stage('Backend - Build & Test') {
-      steps {
-        dir('backend') {
-          sh 'mvn -B -DskipTests=false clean verify'
-        }
-      }
-    }
-
-    stage('Frontend - Build') {
-      steps {
-        dir('frontend') {
+        withCredentials([usernamePassword(
+          credentialsId: 'docker-registry',
+          usernameVariable: 'DOCKER_USER',
+          passwordVariable: 'DOCKER_PASS'
+        )]) {
           sh '''
-            npm install
-            npm run build
+            set -euo pipefail
+
+            echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+
+            docker buildx create --use --name ci-builder || docker buildx use ci-builder
+            docker buildx inspect --bootstrap
+
+            # Build & push CI toolchain
+            docker buildx build \
+              -f ci/Dockerfile . \
+              -t "$DOCKER_USER/$DOCKERHUB_REPO:$CI_TOOLS_IMAGE" \
+              --push
+
+            # Backend build/test
+            docker run --rm \
+              -v "$PWD:/workspace" \
+              -w /workspace/backend \
+              "$DOCKER_USER/$DOCKERHUB_REPO:$CI_TOOLS_IMAGE" \
+              mvn -B -Dmaven.repo.local=/workspace/.m2/repository clean verify
+
+            # Frontend build
+            docker run --rm \
+              -v "$PWD:/workspace" \
+              -w /workspace/frontend \
+              "$DOCKER_USER/$DOCKERHUB_REPO:$CI_TOOLS_IMAGE" \
+              bash -lc "npm ci && npm run build"
+
+            # Build & push backend image
+            docker buildx build backend \
+              -f backend/Dockerfile \
+              -t "$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_IMAGE-$GIT_SHA" \
+              -t "$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_IMAGE-latest" \
+              --push
+
+            # Build & push frontend image
+            docker buildx build frontend \
+              -f frontend/Dockerfile \
+              -t "$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-$GIT_SHA" \
+              -t "$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-latest" \
+              --push
+
+            docker logout || true
           '''
         }
       }
     }
 
-    stage('Docker Build') {
-      parallel {
-        stage('Backend image') {
-          steps {
-            sh 'docker build -t $REGISTRY/desk-picker-backend:latest backend'
-          }
+    /* =========================================================
+       TEST / PROD — Kubernetes agents, no Docker
+       ========================================================= */
+    stage('CI (kubernetes mode)') {
+      when { expression { env.CI_MODE == 'k8s' } }
+
+      agent {
+        kubernetes {
+          yaml """
+apiVersion: v1
+kind: Pod
+spec:
+  containers:
+  - name: tools
+    image: maven:3.9.11-eclipse-temurin-21
+    tty: true
+    command: ["sh","-lc","cat"]
+
+  - name: buildkit
+    image: moby/buildkit:rootless
+    tty: true
+    command: ["sh","-lc","buildkitd --addr unix:///run/user/1000/buildkit/buildkitd.sock"]
+    securityContext:
+      runAsUser: 1000
+      runAsGroup: 1000
+"""
         }
-        stage('Frontend image') {
-          steps {
-            sh 'docker build -t $REGISTRY/desk-picker-frontend:latest frontend'
+      }
+
+      steps {
+        withCredentials([usernamePassword(
+          credentialsId: 'docker-registry',
+          usernameVariable: 'DOCKER_USER',
+          passwordVariable: 'DOCKER_PASS'
+        )]) {
+
+          /* ---------- Build & Test ---------- */
+          container('tools') {
+            sh '''
+              set -e
+              cd backend
+              mvn -B clean verify
+              cd ../frontend
+              npm ci
+              npm run build
+            '''
+          }
+
+          /* ---------- Image Build (BuildKit) ---------- */
+          container('buildkit') {
+            sh '''
+              set -euo pipefail
+
+              # Prepare Docker auth for BuildKit
+              mkdir -p /tmp/docker
+              AUTH="$(printf "%s:%s" "$DOCKER_USER" "$DOCKER_PASS" | base64 | tr -d '\\n')"
+              cat > /tmp/docker/config.json <<EOF
+              { "auths": { "https://index.docker.io/v1/": { "auth": "$AUTH" } } }
+EOF
+
+              export BUILDKIT_HOST=unix:///run/user/1000/buildkit/buildkitd.sock
+
+              # Backend image
+              buildctl build \
+                --frontend dockerfile.v0 \
+                --local context=backend \
+                --local dockerfile=backend \
+                --opt filename=Dockerfile \
+                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_IMAGE-$GIT_SHA",push=true \
+                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_IMAGE-latest",push=true \
+                --opt build-arg:DOCKER_CONFIG=/tmp/docker
+
+              # Frontend image
+              buildctl build \
+                --frontend dockerfile.v0 \
+                --local context=frontend \
+                --local dockerfile=frontend \
+                --opt filename=Dockerfile \
+                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-$GIT_SHA",push=true \
+                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-latest",push=true \
+                --opt build-arg:DOCKER_CONFIG=/tmp/docker
+            '''
           }
         }
       }
     }
+
+    stage('Update Helm values') {
+      steps {
+        sh '''
+          set -euo pipefail
+
+          # Ensure yq exists (install method depends on your agent image)
+          command -v yq >/dev/null 2>&1 || {
+            echo "yq not found. Install yq in your CI tools image or agent."
+            exit 1
+          }
+
+          yq -i \
+            ".backend.image.tag = \\"$BACKEND_TAG\\" |
+            .frontend.image.tag = \\"$FRONTEND_TAG\\"" \
+            "$VALUES_FILE"
+
+          git diff -- "$VALUES_FILE" || true
+        '''
+      }
+    }
+
+    stage('GitOps apply (dev push)') {
+      when { expression { params.DEPLOY_ENV == 'dev' } }
+      steps {
+        withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+          sh '''
+            set -euo pipefail
+            git checkout main
+            git pull --ff-only
+
+            git config user.email "ci@sourcesense.local"
+            git config user.name  "ci-bot"
+
+            git add "$VALUES_FILE"
+            git commit -m "deploy(dev): ${GIT_COMMIT} [skip ci]" || exit 0
+
+            # Use token auth for push
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/raffaelecamanzo/desk-picker.git"
+            git push origin HEAD
+          '''
+        }
+      }
+    }  
+
+    stage('GitOps apply (dev push)') {
+      when { expression { params.DEPLOY_ENV == 'dev' } }
+      steps {
+        withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+          sh '''
+            set -euo pipefail
+            export GH_TOKEN="$GITHUB_TOKEN"
+
+            git fetch origin "$BASE_BRANCH"
+            git checkout -B "$BASE_BRANCH" "origin/$BASE_BRANCH"
+
+            BRANCH="promote/${DEPLOY_ENV}/${GIT_COMMIT}"
+            git checkout -b "$BRANCH"
+
+            git config user.email "ci@your-company.local"
+            git config user.name  "ci-bot"
+
+            git add "$VALUES_FILE"
+            git commit -m "promote(${DEPLOY_ENV}): ${GIT_COMMIT}" || exit 0
+
+            # Use token auth for push
+            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/raffaelecamanzo/desk-picker.git"
+            git push origin HEAD
+
+            gh pr create \
+              --base "$BASE_BRANCH" \
+              --head "$BRANCH" \
+              --title "Promote to ${DEPLOY_ENV}: ${GIT_COMMIT}" \
+              --body "Update ${VALUES_FILE} to backend=${BACKEND_TAG}, frontend=${FRONTEND_TAG}"
+          '''
+        }
+      }
+    }
+
   }
 }

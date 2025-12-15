@@ -14,7 +14,7 @@ ingress:
   className: nginx
   annotations: {}
   hosts:
-    - host: desk-picker.example.com
+    - host: desk-picker.sourcesense.com
       paths:
         - path: /api
           pathType: Prefix
