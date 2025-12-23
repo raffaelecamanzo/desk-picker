@@ -222,14 +222,11 @@ pipeline {
         }
       }
     }
-
-    stage('Cleanup') {
-      post {
-        always {
-          sh 'docker logout || true'
-        }
-      }
+  }
+  
+  post {
+    always {
+      sh 'docker logout || true'
     }
-
   }
 }
