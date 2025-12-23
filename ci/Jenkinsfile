@@ -80,7 +80,6 @@ pipeline {
               -t "$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-latest" \
               --push
 
-            docker logout || true
           '''
         }
       }
@@ -135,16 +134,22 @@ pipeline {
     stage('Update Helm values') {
       agent any
       steps {
-        sh '''
+        sh """
           set -euo pipefail
 
-          yq -i \
-            ".backend.image.tag = \\"$BACKEND_TAG\\" |
-             .frontend.image.tag = \\"$FRONTEND_TAG\\"" \
-            "$VALUES_FILE"
-
-          git diff -- "$VALUES_FILE" || true
-        '''
+          docker run --rm \
+            -v "\$PWD:/workspace" \
+            -w /workspace \
+            -e VALUES_FILE="${env.VALUES_FILE}" \
+            -e BACKEND_TAG="${env.BACKEND_TAG}" \
+            -e FRONTEND_TAG="${env.FRONTEND_TAG}" \
+            raffaelecamanzo/local-build-images:ci-tools \
+            bash -lc '
+              set -euo pipefail
+              yq -i ".backend.image.tag = \\"$BACKEND_TAG\\" | .frontend.image.tag = \\"$FRONTEND_TAG\\"" "$VALUES_FILE"
+              git diff -- "$VALUES_FILE" || true
+            '
+        """
       }
     }
 
@@ -153,21 +158,32 @@ pipeline {
       agent any
       steps {
         withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-          sh '''
+          sh """
             set -euo pipefail
 
-            git checkout main
-            git pull --ff-only
+            docker run --rm \
+              -v "\$PWD:/workspace" \
+              -w /workspace \
+              -e VALUES_FILE="${env.VALUES_FILE}" \
+              -e GIT_SHA="${env.GIT_SHA}" \
+              -e GITHUB_TOKEN="\$GITHUB_TOKEN" \
+              raffaelecamanzo/local-build-images:ci-tools \
+              bash -lc '
+                set -euo pipefail
 
-            git config user.email "ci@sourcesense.local"
-            git config user.name  "ci-bot"
+                git checkout main
+                git pull --ff-only
 
-            git add "$VALUES_FILE"
-            git commit -m "deploy(dev): ${GIT_SHA} [skip ci]" || exit 0
+                git config user.email "ci@sourcesense.local"
+                git config user.name  "ci-bot"
 
-            git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/raffaelecamanzo/desk-picker.git"
-            git push origin main
-          '''
+                git add "$VALUES_FILE"
+                git commit -m "deploy(dev): $GIT_SHA [skip ci]" || exit 0
+
+                git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/raffaelecamanzo/desk-picker.git"
+                git push origin main
+              '
+          """
         }
       }
     }
@@ -206,5 +222,12 @@ pipeline {
         }
       }
     }
+
+    post {
+      always {
+        sh 'docker logout || true'
+      }
+    }
+
   }
 }
