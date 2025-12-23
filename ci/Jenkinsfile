@@ -223,10 +223,16 @@ pipeline {
       }
     }
   }
-  
+
   post {
     always {
-      sh 'docker logout || true'
+      script {
+        if (env.CI_MODE == 'docker') {
+          node {
+            sh 'docker logout || true'
+          }
+        }
+      }
     }
   }
 }
