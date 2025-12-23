@@ -92,77 +92,41 @@ pipeline {
        ========================================================= */
     stage('CI - Kubernetes mode') {
       when { expression { env.CI_MODE == 'k8s' } }
-
-      agent {
-        kubernetes {
-          yaml """
-apiVersion: v1
-kind: Pod
-spec:
-  containers:
-  - name: tools
-    image: ${env.DOCKERHUB_USER_NAME}/${env.DOCKERHUB_REPO}:ci-tools
-    tty: true
-    command: ["sh","-lc","cat"]
-
-  - name: buildkit
-    image: moby/buildkit:latest
-    tty: true
-    command: ["sh","-lc","buildkitd --addr unix:///run/buildkit/buildkitd.sock & sleep infinity"]
-"""
-        }
-      }
-
+      agent none
       steps {
-        withCredentials([usernamePassword(
-          credentialsId: 'docker-registry',
-          usernameVariable: 'DOCKER_USER',
-          passwordVariable: 'DOCKER_PASS'
-        )]) {
-
-          // Build & test in the tools container (this must include node+mvn+yq+gh)
-          container('tools') {
-            sh '''
-              set -euo pipefail
-              cd backend
-              mvn -B clean verify
-              cd ../frontend
-              npm ci
-              npm run build
-            '''
-          }
-
-          // Build & push images with BuildKit
-          container('buildkit') {
-            sh '''
-              set -euo pipefail
-
-              mkdir -p /tmp/docker
-              AUTH="$(printf "%s:%s" "$DOCKER_USER" "$DOCKER_PASS" | base64 | tr -d '\\n')"
-              cat > /tmp/docker/config.json <<EOF
-              { "auths": { "https://index.docker.io/v1/": { "auth": "$AUTH" } } }
-EOF
-
-              export BUILDKIT_HOST=unix:///run/buildkit/buildkitd.sock
-
-              # Backend
-              buildctl build \
-                --frontend dockerfile.v0 \
-                --local context=backend \
-                --local dockerfile=backend \
-                --opt filename=Dockerfile \
-                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_TAG",push=true \
-                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$BACKEND_IMAGE-latest",push=true
-
-              # Frontend
-              buildctl build \
-                --frontend dockerfile.v0 \
-                --local context=frontend \
-                --local dockerfile=frontend \
-                --opt filename=Dockerfile \
-                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_TAG",push=true \
-                --output type=image,name="$DOCKER_USER/$DOCKERHUB_REPO:$FRONTEND_IMAGE-latest",push=true
-            '''
+        script {
+          podTemplate(yaml: """
+    apiVersion: v1
+    kind: Pod
+    spec:
+      containers:
+      - name: tools
+        image: ${env.DOCKERHUB_USER_NAME}/${env.DOCKERHUB_REPO}:ci-tools
+        tty: true
+        command: ["sh","-lc","cat"]
+      - name: buildkit
+        image: moby/buildkit:latest
+        tty: true
+        command: ["sh","-lc","buildkitd --addr unix:///run/buildkit/buildkitd.sock & sleep infinity"]
+    """) {
+            node(POD_LABEL) {
+              container('tools') {
+                sh '''
+                  set -euo pipefail
+                  cd backend
+                  mvn -B clean verify
+                  cd ../frontend
+                  npm ci
+                  npm run build
+                '''
+              }
+              container('buildkit') {
+                sh '''
+                  set -euo pipefail
+                  # buildctl commands...
+                '''
+              }
+            }
           }
         }
       }
